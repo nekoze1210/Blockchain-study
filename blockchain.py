@@ -1,4 +1,5 @@
 # coding: UTF-8
+
 import hashlib
 import json
 
@@ -96,7 +97,37 @@ class Blockchain(object):
             last_block = block
             current_index += 1
 
+    def resolve_conflicts(self):
+        """
+        これがコンセンサスアルゴリズムだ。ネットワーク上の最も長いチェーンで自らのチェーンを
+        置き換えることでコンフリクトを解消する。
+        :return: <bool> 自らのチェーンが置き換えられると True 、そうでなれけば False
+        """
+        neighbors = self.nodes
+        new_chain = None
 
+        # 自らのチェーンより長いチェーンを探す
+        max_length = len(self.chain)
+
+        # 他のすべてのノードのチェーンを確認
+        for node in neighbors:
+            response = requests.get(f'http://{node}/chain')
+
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+
+                # そのチェーンがより長いかor有効か確認
+                if length > max_length and self.valid_chain(chain):
+                    max_length = length
+                    new_chain = chain
+
+        # もし自らのチェーンがより長く、かつ有効なチェーンを見つけた場合、それで置き換える
+        if new_chain:
+            self.chain = new_chain
+            return True
+
+        return False
 
     def register_node(self, address):
         """
@@ -196,7 +227,40 @@ def full_chain():
     }
     return jsonify(response), 200
 
+@app.route('/nodes/register', methods=['POST'])
+def register_node():
+    values = request.get_json()
 
+    nodes = values.get('nodes')
+    if nodes is None:
+        return "Error: 有効ではないノードのリストです", 400
+
+    for node in nodes:
+        blockchain.register_node(node)
+
+    response = {
+        'message': '新しいノードが追加されました',
+        'total_nodes': list(blockchain.nodes),
+    }
+    return jsonify(response), 201
+
+
+@app.route('/nodes/resolve', methods=['GET'])
+def consensus():
+    replaced = blockchain.resolve_conflicts()
+
+    if replaced:
+        response = {
+            'message': 'チェーンが置き換えられました',
+            'new_chain': blockchain.chain
+        }
+    else:
+        response = {
+            'message': 'チェーンが確認されました',
+            'chain': blockchain.chain
+        }
+
+    return jsonify(response), 200
 
 # port5000でサーバを起動
 if __name__ == '__main__':
