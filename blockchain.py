@@ -1,24 +1,203 @@
 # coding: UTF-8
+import hashlib
+import json
+
+from textwrap import dedent
+from time import time
+from urllib.parse import urlparse
+from uuid import uuid4
+from urllib.parse import urlparse
+from flask import Flask, jsonify, request
+import requests
+
 
 class Blockchain(object):
     def __init__(self):
         self.chain = []
         self.current_transactions = []
+        self.nodes = set()
 
-    def new_block(self):
+        self.new_block(previous_hash=1, proof=100)
+
+    def new_block(self, proof, previous_hash=None):
+        """
+        ブロックチェーンに新しいブロックを作る
+        :param proof: <int> プルーフ・オブ・ワークアルゴリズムから得られるプルーフ
+        :param previous_hash: (オプション) <str> 前のブロックのハッシュ
+        :return: <dict> 新しいブロック
+        """
+
+        block = {
+            'index': len(self.chain) + 1,
+            'timestamp': time(),
+            'transactions': self.current_transactions,
+            'proof': proof,
+            'previous_hash': previous_hash or self.hash(self.chain[-1]),
+        }
+
+        # 現在のトランザクションリストをリセット
+        self.current_transactions = []
+
+        self.chain.append(block)
+        return block
+
+    def new_transaction(self, sender, recipent, amount):
         # 新しいブロックを作り、チェーンに加える
-        pass
+        """
+        次に採掘されるブロックに加える新しいトランザクションを作る
+        :param sender: <str> 送信者のアドレス
+        :param recipient: <str> 受信者のアドレス
+        :param amount: <int> 量
+        :return: <int> このトランザクションを含むブロックのアドレス
+        """
+        self.current_transactions.append({
+            'sender': sender,
+            'recipent': recipent,
+            'amount': amount,
+        })
+        return self.last_block['index'] + 1
 
-    def new_transaction(self):
-        # 新しいトランザクションをリストに加える
-        pass
+    def proof_of_work(self, last_proof):
+        """
+        シンプルなプルーフ・オブ・ワークのアルゴリズム:
+         - hash(pp') の最初の4つが0となるような p' を探す
+         - p は前のプルーフ、 p' は新しいプルーフ
+        :param last_proof: <int>
+        :return: <int>
+        """
+        proof = 0
+        while self.valid_proof(last_proof, proof) is False:
+            proof += 1
+
+        return proof
+
+    def valid_chain(self, chain):
+        """
+        ブロックチェーンが正しいかを確認する
+
+        :param chain: <list> ブロックチェーン
+        :return: <bool> True であれば正しく、 False であればそうではない
+        """
+        
+        last_block = chain[0]
+        current_index = 1
+
+        while current_index < len(chain):
+            block = chain[current_index]
+            print(f'{last_block}')
+            print(f'{block}')
+            print("\n---------\n")
+
+            if block['previous_hash'] != self.hash(last_block):
+                return False
+
+            if not self.valid_proof(last_block['proof'], block['proof']):
+                return False
+            last_block = block
+            current_index += 1
+
+
+
+    def register_node(self, address):
+        """
+        ノードリストに新しいノードを加える
+        :param address: <str> ノードのアドレス 例: 'http://192.168.0.5:5000'
+        :return: None
+        """
+        parsed_url = urlparse(address)
+        self.nodes.add(parsed_url)
 
     @staticmethod
     def hash(block):
-        # ブロックをハッシュ化する
-        pass
+        """
+        ブロックの　SHA-256　ハッシュを作る
+        :param block: <dict> ブロック
+        :return: <str>
+        """
+        # 必ずディクショナリ（辞書型のオブジェクト）がソートされている必要がある。そうでないと、一貫性のないハッシュとなってしまう
+        block_string = json.dumps(block, sort_keys=True).encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+    @staticmethod
+    def valid_proof(last_proof, proof):
+        """
+        プルーフが正しいかを確認する: hash(last_proof, proof)の最初の4つが0となっているか？
+        :param last_proof: <int> 前のプルーフ
+        :param proof: <int> 現在のプルーフ
+        :return: <bool> 正しければ true 、そうでなれけば false
+        """
+        guess = f'{last_proof}{proof}'.encode()
+        guess_hash = hashlib.sha256(guess).hexdigest()
+
+        return guess_hash[:4] == "0000"
 
     @property
     def last_block(self):
-        # チェーンの最後のブロックをリターンする
-        pass
+        """チェーンの最後のブロックをリターンする"""
+        return self.chain[-1]
+
+
+#ノードを作る
+app = Flask(__name__)
+
+# このノードのグローバルにユニークなアドレスを作る
+node_identifire = str(uuid4()).replace('-', '')
+
+# ブロックチェーンクラスのインスタンスを作成
+blockchain = Blockchain()
+
+# POSTメソッドで新規トランザクションのエンドポイントを作成
+@app.route('/transactions/new', methods=['POST'])
+def new_transaction():
+    values = request.get_json()
+    # パラメータの存在検証
+    required = ['sender', 'recipient', 'amount']
+    if not all(k in values for k in required):
+        return 'パラメータ不足'
+    # 新しいトランザクションを作成
+    index = blockchain.new_transaction(values['sender'], values['recipient]', values['amount']])
+    response = {'message' : f'このトランザクションはブロック{index}に追加されました。'}
+    return jsonify(response), 201
+
+# GETメソッドで/mineのエンドポイントを作成
+@app.route('/mine', methods=['GET'])
+def mine():
+    # 次のプルーフを見つけるためプルーフオブワークアルゴリズムを使用する
+    last_block = blockchain.last_block
+    last_proof = last_block['proof']
+    proof = blockchain.proof_of_work(last_proof)
+
+    # プルーフを見つけたことに対する報酬を得る
+    # 送信者は、採掘者が新しいコインを採掘したことを表すために"0"とする
+    blockchain.new_transaction(
+        sender = "0",
+        recipent = node_identifire,
+        amount = 1,
+    )
+    # チェーンに新しいブロックを加えることで、新しいブロックを採掘する
+    block = blockchain.new_block(proof)
+
+    response = {
+        'message' : 'yay! 新しいブロックを採掘しました',
+        'index' : block['index'],
+        'transactions' : block['transactions'],
+        'proof' : block['proof'],
+        'previous_hash' : block['previous_hash'],
+    }
+
+    return jsonify(response), 200
+
+# GETメソッドで、フルのブロックチェーンをリターンする/chainのエンドポイントを作成
+@app.route('/chain', methods=['GET'])
+def full_chain():
+    response = {
+        'chain' : blockchain.chain,
+        'length' : len(blockchain.chain),
+    }
+    return jsonify(response), 200
+
+
+
+# port5000でサーバを起動
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
